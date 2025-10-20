@@ -12,7 +12,7 @@ passlib[bcrypt]==1.7.4
 python-multipart==0.0.6
 reportlab==4.0.7
 qrcode[pil]==7.4.2
-kkiapay==1.1.8
+kkiapay
 requests==2.31.0
 urllib3==1.26.18
 ecdsa==0.18.0
