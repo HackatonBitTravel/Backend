@@ -275,29 +275,8 @@ Content-Type: application/json
 
 ```javascript
 // Charger le SDK
-<script src="https://cdn.kkiapay.me/k.js"></script>
-
-// Utiliser les infos reçues
-openKkiapayWidget({
-  amount: paymentInfo.amount,
-  api_key: paymentInfo.public_key,
-  sandbox: paymentInfo.sandbox,
-  phone: paymentInfo.phone,
-  name: paymentInfo.name,
-  reason: paymentInfo.reason
-});
-
 // Écouter le succès
-addSuccessListener(async (response) => {
-  // Vérifier le paiement côté backend
-  await fetch('/payments/kkiapay/verify', {
-    method: 'POST',
-    body: JSON.stringify({
-      transaction_id: response.transactionId,
-      reservation_id: paymentInfo.reservation_id
-    })
-  });
-});
+//Voir documentation kkiapay 
 ```
 
 #### Étape 3 : Vérifier le paiement
@@ -594,9 +573,7 @@ BTCPAY_STORE_ID=votre_store_id
 - Numéro test (échec) : `+22997000002`
 
 **BTCPay Server :**
-Utilisez le testnet ou votre propre nœud en mode test.
 
----
 
 ## Flux utilisateur complet (Frontend)
 
@@ -653,14 +630,12 @@ L'API retourne des codes HTTP standards :
 
 Pour toute question sur l'intégration :
 - Consultez `/docs` pour tester interactivement
-- Vérifiez les logs du backend pour débugger
-- Les endpoints retournent toujours des messages d'erreur clairs
 
 ---
 
 ## Checklist d'intégration
 
-- [ ] CORS configuré pour votre domaine frontend
+- [ ] CORS configuré 
 - [ ] Authentification implémentée (optionnelle pour achats)
 - [ ] Recherche de trajets fonctionnelle
 - [ ] Formulaire de réservation connecté
