@@ -24,8 +24,8 @@ def generate_ticket(ticket_data: TicketGenerate, db: Session = Depends(get_db)):
     if not reservation:
         raise HTTPException(status_code=404, detail="Réservation non trouvée")
     
-    # if reservation.payment_status != PaymentStatus.COMPLETED:
-    #     raise HTTPException(status_code=400, detail="Paiement non effectué")
+    if reservation.payment_status != PaymentStatus.COMPLETED:
+        raise HTTPException(status_code=400, detail="Paiement non effectué")
     
     schedule = db.query(Schedule).filter(Schedule.id == reservation.schedule_id).first()
     if not schedule:
