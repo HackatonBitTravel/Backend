@@ -174,7 +174,7 @@ async def lightning_webhook(request: Request, db: Session = Depends(get_db)):
         # Traitement selon le statut
         if status == "paid":
             # Utiliser la fonction de mapping pour mettre à jour le statut
-            success = set_payment_status_raw(db, payment.id, "SUCCESS")
+            success = set_payment_status_raw(db, payment.id, "COMPLETED")
             
             if not success:
                 raise HTTPException(status_code=500, detail="Erreur lors de la mise à jour du statut")
