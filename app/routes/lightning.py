@@ -10,6 +10,7 @@ from app.models.payment import Payment, PaymentProvider
 from app.models.reservation import Reservation, PaymentStatus as ReservationPaymentStatus
 from app.services.lightning_service import lightning_service
 from uuid import UUID
+from datetime import datetime
 import logging
 
 # Configuration du logger
@@ -17,35 +18,69 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/payments/lightning", tags=["Lightning Payments"])
 
-# ✅ SOLUTION : Fonction de mapping pour contourner le problème d'enum
-def set_payment_status_raw(db: Session, payment_id: UUID, status: str):
+# FONCTION DE CONVERSION : Mappe tous les statuts vers les valeurs PostgreSQL
+def convert_to_payment_status(status: str) -> str:
+    """
+    Convertit n'importe quel statut vers les valeurs de l'enum paymentstatus PostgreSQL
+    PostgreSQL accepte UNIQUEMENT: pending, success, failed, cancelled
+    """
+    status = status.upper()
+    
+    conversion_map = {
+        # Valeurs exactes de Payment.PaymentStatus
+        "SUCCESS": "success",
+        "PENDING": "pending", 
+        "FAILED": "failed",
+        "CANCELLED": "cancelled",
+        
+        # Conversion Reservation.PaymentStatus → Payment.PaymentStatus
+        "COMPLETED": "success",  # important: completed → success
+        
+        # Autres variations
+        "PAID": "success",
+        "CONFIRMED": "success",
+        "APPROVED": "success",
+        "REJECTED": "failed",
+        "EXPIRED": "failed"
+    }
+    
+    result = conversion_map.get(status, "pending")
+    logger.info(f"Conversion statut: {status} -> {result}")
+    return result
+
+def set_payment_status_raw(db: Session, payment_id: UUID, status: str) -> bool:
     """
     Met à jour le statut d'un paiement en utilisant du SQL brut
-    pour contourner les contraintes d'enum de SQLAlchemy
+    pour contourner les problèmes d'enum SQLAlchemy
     """
     try:
-        # Mapping : notre code Python -> valeur PostgreSQL
-        status_mapping = {
-            "SUCCESS": "completed",  # On mappe SUCCESS vers completed
-            "COMPLETED": "completed",
-            "PENDING": "pending",
-            "FAILED": "failed",
-            "CANCELLED": "cancelled"
-        }
+        # ÉTAPE 1: Convertir le statut vers la valeur PostgreSQL
+        db_status = convert_to_payment_status(status)
+        logger.info(f"Mise à jour paiement {payment_id}: {status} -> {db_status}")
         
-        db_status = status_mapping.get(status.upper(), status.lower())
-        
+        # ÉTAPE 2: Exécuter la requête SQL brute
         query = text("""
             UPDATE payments 
-            SET status = :status, updated_at = NOW() 
+            SET status = :status, updated_at = :updated_at 
             WHERE id = :payment_id
         """)
         
-        db.execute(query, {"status": db_status, "payment_id": str(payment_id)})
+        result = db.execute(query, {
+            "status": db_status,
+            "updated_at": datetime.utcnow(),
+            "payment_id": str(payment_id)
+        })
+        
         db.commit()
         
-        logger.info(f"Statut du paiement {payment_id} mis à jour vers '{db_status}'")
-        return True
+        # ÉTAPE 3: Vérifier le résultat
+        if result.rowcount > 0:
+            logger.info(f"Statut mis à jour vers '{db_status}' pour {payment_id}")
+            return True
+        else:
+            logger.error(f"Paiement {payment_id} non trouvé")
+            return False
+            
     except Exception as e:
         logger.error(f"Erreur lors de la mise à jour du statut: {str(e)}")
         db.rollback()
@@ -74,14 +109,12 @@ def create_lightning_invoice(request: LightningInvoiceRequest, db: Session = Dep
         result = lightning_service.create_invoice(amount_fcfa, memo)
         
         if result["success"]:
-            # Créer le paiement avec statut PENDING (celui-ci fonctionne)
             db_payment = Payment(
                 reservation_id=reservation.id,
                 provider=PaymentProvider.BITCOIN,
                 amount=amount_fcfa,
                 transaction_id=result.get("invoice_id")
             )
-            # Le statut PENDING est défini par défaut, pas besoin de le spécifier
             
             db.add(db_payment)
             db.commit()
@@ -115,17 +148,14 @@ async def lightning_webhook(request: Request, db: Session = Depends(get_db)):
     Webhook appelé par le service Lightning lorsqu'une facture est payée
     """
     try:
-        # Log de la requête entrante
         logger.info("Webhook Lightning reçu")
         
-        # Récupération et validation du payload
         payload = await request.json()
         logger.info(f"Payload webhook: {payload}")
         
         payment_hash = payload.get("payment_hash")
         status = payload.get("status")
         
-        # Validation des données requises
         if not payment_hash:
             logger.error("payment_hash manquant dans le webhook")
             raise HTTPException(status_code=400, detail="payment_hash manquant")
@@ -147,8 +177,9 @@ async def lightning_webhook(request: Request, db: Session = Depends(get_db)):
         
         # Traitement selon le statut
         if status == "paid":
-            logger.info(f"DEBUG: Appel set_payment_status_raw avec status='SUCCESS'")
-            # Utiliser la fonction de mapping pour mettre à jour le statut
+            logger.info(f"Traitement paiement confirmé pour {payment.id}")
+            
+            # Mise à jour du statut du paiement
             success = set_payment_status_raw(db, payment.id, "SUCCESS")
             
             if not success:
@@ -176,9 +207,8 @@ async def lightning_webhook(request: Request, db: Session = Depends(get_db)):
             }
         
         elif status == "expired":
-            # Utiliser la fonction de mapping
+            logger.info(f"Facture expirée pour {payment_hash}")
             set_payment_status_raw(db, payment.id, "FAILED")
-            logger.info(f"Facture {payment_hash} expirée")
             
             return {
                 "success": True,
@@ -231,6 +261,7 @@ def verify_lightning_payment(request: LightningVerifyRequest, db: Session = Depe
                             "tx_id": request.payment_hash,
                             "payment_id": str(payment.id)
                         })
+                        db.commit()
                 
                 reservation.payment_status = ReservationPaymentStatus.COMPLETED
                 db.commit()
