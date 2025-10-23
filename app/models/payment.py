@@ -15,7 +15,7 @@ class PaymentProvider(str, enum.Enum):
 
 class PaymentStatus(str, enum.Enum):
     PENDING = "pending"
-    SUCCESS = "success"
+    COMPLETED = "completed"  
     FAILED = "failed"
     CANCELLED = "cancelled"
 

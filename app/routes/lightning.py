@@ -1,26 +1,20 @@
 # Routes API pour les paiements Lightning Network
-# Endpoints pour créer et vérifier les factures Lightning
-
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
-from sqlalchemy import text
 from pydantic import BaseModel
 from app.core.database import get_db
 from app.models.payment import Payment, PaymentProvider, PaymentStatus
-from app.models.reservation import Reservation, PaymentStatus as ReservationPaymentStatus
+from app.models.reservation import Reservation  # Plus besoin d'alias!
 from app.services.lightning_service import lightning_service
 from uuid import UUID
-from datetime import datetime
 import logging
 
-# Configuration du logger
 logger = logging.getLogger(__name__)
-
 router = APIRouter(prefix="/payments/lightning", tags=["Lightning Payments"])
 
-def set_payment_status_simple(db: Session, payment_id: UUID, status: str) -> bool:
+def set_payment_status_direct(db: Session, payment_id: UUID, status: PaymentStatus) -> bool:
     """
-    Met à jour le statut d'un paiement en utilisant l'ORM SQLAlchemy normalement
+    Met à jour le statut d'un paiement - Version directe sans mapping
     """
     try:
         payment = db.query(Payment).filter(Payment.id == payment_id).first()
@@ -28,25 +22,13 @@ def set_payment_status_simple(db: Session, payment_id: UUID, status: str) -> boo
             logger.error(f"Paiement {payment_id} non trouvé")
             return False
         
-        # Utiliser directement l'enum PaymentStatus
-        if status.upper() == "SUCCESS":
-            payment.status = PaymentStatus.SUCCESS
-        elif status.upper() == "PENDING":
-            payment.status = PaymentStatus.PENDING
-        elif status.upper() == "FAILED":
-            payment.status = PaymentStatus.FAILED
-        elif status.upper() == "CANCELLED":
-            payment.status = PaymentStatus.CANCELLED
-        else:
-            logger.error(f"Statut non reconnu: {status}")
-            return False
-        
+        payment.status = status  # Utilisation directe de l'enum
         db.commit()
-        logger.info(f"Statut du paiement {payment_id} mis à jour vers '{payment.status.value}'")
+        logger.info(f"Paiement {payment_id} mis à jour vers '{status.value}'")
         return True
         
     except Exception as e:
-        logger.error(f"Erreur lors de la mise à jour du statut: {str(e)}")
+        logger.error(f"Erreur mise à jour statut: {str(e)}")
         db.rollback()
         return False
 
@@ -64,7 +46,7 @@ def create_lightning_invoice(request: LightningInvoiceRequest, db: Session = Dep
         if not reservation:
             raise HTTPException(status_code=404, detail="Réservation non trouvée")
         
-        if reservation.payment_status == ReservationPaymentStatus.COMPLETED:
+        if reservation.payment_status == PaymentStatus.COMPLETED:  # Même enum!
             raise HTTPException(status_code=400, detail="Cette réservation est déjà payée")
         
         amount_fcfa = float(reservation.total_amount)
@@ -103,7 +85,7 @@ def create_lightning_invoice(request: LightningInvoiceRequest, db: Session = Dep
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Erreur lors de la création de la facture Lightning: {str(e)}")
+        logger.error(f"Erreur création facture Lightning: {str(e)}")
         raise HTTPException(status_code=500, detail="Erreur interne du serveur")
 
 @router.post("/webhook")
@@ -143,19 +125,19 @@ async def lightning_webhook(request: Request, db: Session = Depends(get_db)):
         if status == "paid":
             logger.info(f"Traitement paiement confirmé pour {payment.id}")
             
-            # Mise à jour du statut du paiement
-            success = set_payment_status_simple(db, payment.id, "SUCCESS")
+            # Mise à jour du paiement - DIRECT!
+            success = set_payment_status_direct(db, payment.id, PaymentStatus.COMPLETED)
             
             if not success:
                 raise HTTPException(status_code=500, detail="Erreur lors de la mise à jour du statut")
             
-            # Mise à jour de la réservation
+            # Mise à jour de la réservation - MÊME ENUM!
             reservation = db.query(Reservation).filter(
                 Reservation.id == payment.reservation_id
             ).first()
             
             if reservation:
-                reservation.payment_status = ReservationPaymentStatus.COMPLETED
+                reservation.payment_status = PaymentStatus.COMPLETED  # Même valeur!
                 db.commit()
                 logger.info(f"Réservation {reservation.id} marquée comme payée")
             else:
@@ -172,7 +154,7 @@ async def lightning_webhook(request: Request, db: Session = Depends(get_db)):
         
         elif status == "expired":
             logger.info(f"Facture expirée pour {payment_hash}")
-            set_payment_status_simple(db, payment.id, "FAILED")
+            set_payment_status_direct(db, payment.id, PaymentStatus.FAILED)
             
             return {
                 "success": True,
@@ -211,15 +193,15 @@ def verify_lightning_payment(request: LightningVerifyRequest, db: Session = Depe
                 ).first()
                 
                 if payment:
-                    # Utiliser la fonction simple
-                    set_payment_status_simple(db, payment.id, "SUCCESS")
+                    # Utilisation directe!
+                    set_payment_status_direct(db, payment.id, PaymentStatus.COMPLETED)
                     
                     # Mettre à jour le transaction_id si nécessaire
                     if payment.transaction_id != request.payment_hash:
                         payment.transaction_id = request.payment_hash
                         db.commit()
                 
-                reservation.payment_status = ReservationPaymentStatus.COMPLETED
+                reservation.payment_status = PaymentStatus.COMPLETED  # Même valeur!
                 db.commit()
                 
                 return {
