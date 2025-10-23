@@ -48,35 +48,74 @@ def set_payment_status_raw(db: Session, payment_id: UUID, status: str):
     try:
         db_status = convert_to_payment_status(status)
         
-        # APPROCHE SIMPLE : Utiliser l'ORM SQLAlchemy normalement
-        payment = db.query(Payment).filter(Payment.id == payment_id).first()
-        if not payment:
-            logger.error(f"Paiement {payment_id} non trouvé")
+        logger.info(f"=== DEBUG MISE À JOUR STATUT ===")
+        logger.info(f"Payment ID: {payment_id}")
+        logger.info(f"Status input: {status}")
+        logger.info(f"Status converti: {db_status}")
+        logger.info(f"Type payment_id: {type(payment_id)}")
+        
+        # Vérifier que le statut est valide pour l'enum
+        valid_statuses = ["pending", "success", "failed", "cancelled"]
+        if db_status not in valid_statuses:
+            logger.error(f"STATUT INVALIDE: {db_status}. Valides: {valid_statuses}")
             return False
         
-        # Conversion manuelle vers l'enum PaymentStatus
-        from app.models.payment import PaymentStatus
+        # Essayer différentes méthodes
+        methods = [
+            lambda: method_orm(db, payment_id, db_status),
+            lambda: method_sql_raw(db, payment_id, db_status),
+            lambda: method_sql_direct(db, payment_id, db_status)
+        ]
         
-        status_map = {
-            "pending": PaymentStatus.PENDING,
-            "success": PaymentStatus.SUCCESS, 
-            "failed": PaymentStatus.FAILED,
-            "cancelled": PaymentStatus.CANCELLED
-        }
+        for i, method in enumerate(methods):
+            try:
+                logger.info(f"Tentative méthode {i+1}")
+                if method():
+                    logger.info(f"Succès avec méthode {i+1}")
+                    return True
+            except Exception as method_error:
+                logger.warning(f"Échec méthode {i+1}: {method_error}")
+                db.rollback()
+                continue
+                
+        logger.error("Toutes les méthodes ont échoué")
+        return False
         
-        if db_status in status_map:
-            payment.status = status_map[db_status]
-            db.commit()
-            logger.info(f"Statut mis à jour vers {db_status} pour {payment_id}")
-            return True
-        else:
-            logger.error(f"Statut non valide: {db_status}")
-            return False
-            
     except Exception as e:
-        logger.error(f"Erreur ORM: {str(e)}")
+        logger.error(f"Erreur globale: {str(e)}")
         db.rollback()
         return False
+
+def method_orm(db, payment_id, db_status):
+    """Méthode ORM standard"""
+    payment = db.query(Payment).filter(Payment.id == payment_id).first()
+    if payment:
+        from app.models.payment import PaymentStatus
+        status_map = {
+            "pending": PaymentStatus.PENDING,
+            "success": PaymentStatus.SUCCESS,
+            "failed": PaymentStatus.FAILED, 
+            "cancelled": PaymentStatus.CANCELLED
+        }
+        payment.status = status_map[db_status]
+        db.commit()
+        return True
+    return False
+
+def method_sql_raw(db, payment_id, db_status):
+    """Méthode SQL brut avec paramètres nommés"""
+    query = text("UPDATE payments SET status = :s, updated_at = NOW() WHERE id = :pid")
+    db.execute(query, {"s": db_status, "pid": str(payment_id)})
+    db.commit()
+    return True
+
+def method_sql_direct(db, payment_id, db_status):
+    """Méthode SQL directe avec interpolation (moins sécurisée)"""
+    query = text(f"UPDATE payments SET status = '{db_status}', updated_at = NOW() WHERE id = '{payment_id}'")
+    db.execute(query)
+    db.commit()
+    return True
+
 class LightningInvoiceRequest(BaseModel):
     reservation_id: UUID
 
@@ -174,7 +213,7 @@ async def lightning_webhook(request: Request, db: Session = Depends(get_db)):
         # Traitement selon le statut
         if status == "paid":
             # Utiliser la fonction de mapping pour mettre à jour le statut
-            success = set_payment_status_raw(db, payment.id, "COMPLETED")
+            success = set_payment_status_raw(db, payment.id, "SUCCESS")
             
             if not success:
                 raise HTTPException(status_code=500, detail="Erreur lors de la mise à jour du statut")
