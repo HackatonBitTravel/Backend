@@ -60,6 +60,40 @@ def create_lightning_invoice(request: LightningInvoiceRequest, db: Session = Dep
             "success": False,
             "message": result.get("message")
         }
+from fastapi import Request
+
+@router.post("/webhook")
+async def lightning_webhook(request: Request, db: Session = Depends(get_db)):
+
+    payload = await request.json()
+
+    payment_hash = payload.get("payment_hash")
+    status = payload.get("status")  
+
+    if not payment_hash:
+        raise HTTPException(status_code=400, detail="payment_hash manquant")
+
+ 
+    payment = db.query(Payment).filter(Payment.transaction_id == payment_hash).first()
+    if not payment:
+        raise HTTPException(status_code=404, detail="Paiement non trouvé")
+
+    if status == "paid":
+        payment.status = DBPaymentStatus.SUCCESS
+        reservation = db.query(Reservation).filter(Reservation.id == payment.reservation_id).first()
+        if reservation:
+            reservation.payment_status = ReservationPaymentStatus.COMPLETED
+
+        db.commit()
+        return {"success": True, "message": "Paiement confirmé via webhook"}
+
+    elif status == "expired":
+        payment.status = DBPaymentStatus.FAILED
+        db.commit()
+        return {"success": True, "message": "Facture expirée"}
+
+    else:
+        return {"success": True, "message": f"Statut reçu : {status}"}
 
 @router.post("/verify")
 def verify_lightning_payment(request: LightningVerifyRequest, db: Session = Depends(get_db)):
