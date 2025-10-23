@@ -18,22 +18,35 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/payments/lightning", tags=["Lightning Payments"])
 
 # SOLUTION : Fonction de mapping pour contourner le problème d'enum
-def set_payment_status_raw(db: Session, payment_id: UUID, status: str):
+def convert_to_payment_status(status: str) -> str:
     """
-    Met à jour le statut d'un paiement en utilisant du SQL brut
-    pour contourner les contraintes d'enum de SQLAlchemy
+    Convertit n'importe quel statut de paiement vers les valeurs de l'enum PaymentStatus
     """
-    try:
-        # Mapping : notre code Python -> valeur PostgreSQL
-        status_mapping = {
-            "SUCCESS": "success",    
-            "COMPLETED": "success",
-            "PENDING": "pending",
-            "FAILED": "failed",
-            "CANCELLED": "cancelled"
-        }
+    status = status.upper()
+    
+    # Mapping complet
+    conversion_map = {
+        # PaymentStatus values
+        "SUCCESS": "success",
+        "PENDING": "pending", 
+        "FAILED": "failed",
+        "CANCELLED": "cancelled",
         
-        db_status = status_mapping.get(status.upper(), status.lower())
+        # Reservation.PaymentStatus values
+        "COMPLETED": "success",
+        
+        # Autres variations possibles
+        "PAID": "success",
+        "CONFIRMED": "success",
+        "APPROVED": "success",
+        "REJECTED": "failed",
+        "EXPIRED": "failed"
+    }
+    
+    return conversion_map.get(status, "pending")  # Par défaut "pending"
+def set_payment_status_raw(db: Session, payment_id: UUID, status: str):
+    try:
+        db_status = convert_to_payment_status(status)
         
         query = text("""
             UPDATE payments 
@@ -50,7 +63,7 @@ def set_payment_status_raw(db: Session, payment_id: UUID, status: str):
         logger.error(f"Erreur lors de la mise à jour du statut: {str(e)}")
         db.rollback()
         return False
-
+    
 class LightningInvoiceRequest(BaseModel):
     reservation_id: UUID
 
