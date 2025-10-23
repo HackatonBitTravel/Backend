@@ -9,7 +9,10 @@ from app.models.payment import Payment, PaymentProvider, PaymentStatus as DBPaym
 from app.models.reservation import Reservation, PaymentStatus as ReservationPaymentStatus
 from app.services.lightning_service import lightning_service
 from uuid import UUID
+import logging
 
+# Configuration du logger
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/payments/lightning", tags=["Lightning Payments"])
 
 class LightningInvoiceRequest(BaseModel):
@@ -62,38 +65,93 @@ def create_lightning_invoice(request: LightningInvoiceRequest, db: Session = Dep
         }
 from fastapi import Request
 
+
 @router.post("/webhook")
 async def lightning_webhook(request: Request, db: Session = Depends(get_db)):
-
-    payload = await request.json()
-
-    payment_hash = payload.get("payment_hash")
-    status = payload.get("status")  
-
-    if not payment_hash:
-        raise HTTPException(status_code=400, detail="payment_hash manquant")
-
- 
-    payment = db.query(Payment).filter(Payment.transaction_id == payment_hash).first()
-    if not payment:
-        raise HTTPException(status_code=404, detail="Paiement non trouvé")
-
-    if status == "paid":
-        payment.status = DBPaymentStatus.SUCCESS
-        reservation = db.query(Reservation).filter(Reservation.id == payment.reservation_id).first()
-        if reservation:
-            reservation.payment_status = ReservationPaymentStatus.COMPLETED
-
-        db.commit()
-        return {"success": True, "message": "Paiement confirmé via webhook"}
-
-    elif status == "expired":
-        payment.status = DBPaymentStatus.FAILED
-        db.commit()
-        return {"success": True, "message": "Facture expirée"}
-
-    else:
-        return {"success": True, "message": f"Statut reçu : {status}"}
+    """
+    Webhook appelé par le service Lightning lorsqu'une facture est payée
+    """
+    try:
+        # Log de la requête entrante
+        logger.info("Webhook Lightning reçu")
+        
+        # Récupération et validation du payload
+        payload = await request.json()
+        logger.info(f"Payload webhook: {payload}")
+        
+        payment_hash = payload.get("payment_hash")
+        status = payload.get("status")
+        
+        # Validation des données requises
+        if not payment_hash:
+            logger.error("payment_hash manquant dans le webhook")
+            raise HTTPException(status_code=400, detail="payment_hash manquant")
+        
+        if not status:
+            logger.error("status manquant dans le webhook")
+            raise HTTPException(status_code=400, detail="status manquant")
+        
+        # Recherche du paiement
+        payment = db.query(Payment).filter(
+            Payment.transaction_id == payment_hash
+        ).first()
+        
+        if not payment:
+            logger.warning(f"Paiement non trouvé pour payment_hash: {payment_hash}")
+            raise HTTPException(status_code=404, detail="Paiement non trouvé")
+        
+        logger.info(f"Paiement trouvé: {payment.id}, statut actuel: {payment.status}")
+        
+        # Traitement selon le statut
+        if status == "paid":
+            # Mise à jour du paiement
+            payment.status = DBPaymentStatus.SUCCESS
+            
+            # Mise à jour de la réservation
+            reservation = db.query(Reservation).filter(
+                Reservation.id == payment.reservation_id
+            ).first()
+            
+            if reservation:
+                reservation.payment_status = ReservationPaymentStatus.COMPLETED
+                logger.info(f"Réservation {reservation.id} marquée comme payée")
+            else:
+                logger.error(f"Réservation non trouvée pour payment_id: {payment.id}")
+            
+            db.commit()
+            logger.info(f"Paiement {payment.id} confirmé via webhook")
+            
+            return {
+                "success": True,
+                "message": "Paiement confirmé via webhook",
+                "payment_id": str(payment.id),
+                "reservation_id": str(payment.reservation_id)
+            }
+        
+        elif status == "expired":
+            payment.status = DBPaymentStatus.FAILED
+            db.commit()
+            logger.info(f"Facture {payment_hash} expirée")
+            
+            return {
+                "success": True,
+                "message": "Facture expirée",
+                "payment_id": str(payment.id)
+            }
+        
+        else:
+            logger.info(f"Statut webhook non géré: {status}")
+            return {
+                "success": True,
+                "message": f"Statut reçu : {status}"
+            }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erreur dans le webhook Lightning: {str(e)}", exc_info=True)
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Erreur interne: {str(e)}")
 
 @router.post("/verify")
 def verify_lightning_payment(request: LightningVerifyRequest, db: Session = Depends(get_db)):
