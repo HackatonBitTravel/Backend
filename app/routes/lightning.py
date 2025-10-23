@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 from pydantic import BaseModel
 from app.core.database import get_db
-from app.models.payment import Payment, PaymentProvider
+from app.models.payment import Payment, PaymentProvider, PaymentStatus
 from app.models.reservation import Reservation, PaymentStatus as ReservationPaymentStatus
 from app.services.lightning_service import lightning_service
 from uuid import UUID
@@ -18,69 +18,33 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/payments/lightning", tags=["Lightning Payments"])
 
-# FONCTION DE CONVERSION : Mappe tous les statuts vers les valeurs PostgreSQL
-def convert_to_payment_status(status: str) -> str:
+def set_payment_status_simple(db: Session, payment_id: UUID, status: str) -> bool:
     """
-    Convertit n'importe quel statut vers les valeurs de l'enum paymentstatus PostgreSQL
-    PostgreSQL accepte UNIQUEMENT: pending, success, failed, cancelled
-    """
-    status = status.upper()
-    
-    conversion_map = {
-        # Valeurs exactes de Payment.PaymentStatus
-        "SUCCESS": "success",
-        "PENDING": "pending", 
-        "FAILED": "failed",
-        "CANCELLED": "cancelled",
-        
-        # Conversion Reservation.PaymentStatus → Payment.PaymentStatus
-        "COMPLETED": "success",  # important: completed → success
-        
-        # Autres variations
-        "PAID": "success",
-        "CONFIRMED": "success",
-        "APPROVED": "success",
-        "REJECTED": "failed",
-        "EXPIRED": "failed"
-    }
-    
-    result = conversion_map.get(status, "pending")
-    logger.info(f"Conversion statut: {status} -> {result}")
-    return result
-
-def set_payment_status_raw(db: Session, payment_id: UUID, status: str) -> bool:
-    """
-    Met à jour le statut d'un paiement en utilisant du SQL brut
-    pour contourner les problèmes d'enum SQLAlchemy
+    Met à jour le statut d'un paiement en utilisant l'ORM SQLAlchemy normalement
     """
     try:
-        # ÉTAPE 1: Convertir le statut vers la valeur PostgreSQL
-        db_status = convert_to_payment_status(status)
-        logger.info(f"Mise à jour paiement {payment_id}: {status} -> {db_status}")
-        
-        # ÉTAPE 2: Exécuter la requête SQL brute
-        query = text("""
-            UPDATE payments 
-            SET status = :status, updated_at = :updated_at 
-            WHERE id = :payment_id
-        """)
-        
-        result = db.execute(query, {
-            "status": db_status,
-            "updated_at": datetime.utcnow(),
-            "payment_id": str(payment_id)
-        })
-        
-        db.commit()
-        
-        # ÉTAPE 3: Vérifier le résultat
-        if result.rowcount > 0:
-            logger.info(f"Statut mis à jour vers '{db_status}' pour {payment_id}")
-            return True
-        else:
+        payment = db.query(Payment).filter(Payment.id == payment_id).first()
+        if not payment:
             logger.error(f"Paiement {payment_id} non trouvé")
             return False
-            
+        
+        # Utiliser directement l'enum PaymentStatus
+        if status.upper() == "SUCCESS":
+            payment.status = PaymentStatus.SUCCESS
+        elif status.upper() == "PENDING":
+            payment.status = PaymentStatus.PENDING
+        elif status.upper() == "FAILED":
+            payment.status = PaymentStatus.FAILED
+        elif status.upper() == "CANCELLED":
+            payment.status = PaymentStatus.CANCELLED
+        else:
+            logger.error(f"Statut non reconnu: {status}")
+            return False
+        
+        db.commit()
+        logger.info(f"Statut du paiement {payment_id} mis à jour vers '{payment.status.value}'")
+        return True
+        
     except Exception as e:
         logger.error(f"Erreur lors de la mise à jour du statut: {str(e)}")
         db.rollback()
@@ -180,7 +144,7 @@ async def lightning_webhook(request: Request, db: Session = Depends(get_db)):
             logger.info(f"Traitement paiement confirmé pour {payment.id}")
             
             # Mise à jour du statut du paiement
-            success = set_payment_status_raw(db, payment.id, "SUCCESS")
+            success = set_payment_status_simple(db, payment.id, "SUCCESS")
             
             if not success:
                 raise HTTPException(status_code=500, detail="Erreur lors de la mise à jour du statut")
@@ -208,7 +172,7 @@ async def lightning_webhook(request: Request, db: Session = Depends(get_db)):
         
         elif status == "expired":
             logger.info(f"Facture expirée pour {payment_hash}")
-            set_payment_status_raw(db, payment.id, "FAILED")
+            set_payment_status_simple(db, payment.id, "FAILED")
             
             return {
                 "success": True,
@@ -247,20 +211,12 @@ def verify_lightning_payment(request: LightningVerifyRequest, db: Session = Depe
                 ).first()
                 
                 if payment:
-                    # Utiliser la fonction de mapping
-                    set_payment_status_raw(db, payment.id, "SUCCESS")
+                    # Utiliser la fonction simple
+                    set_payment_status_simple(db, payment.id, "SUCCESS")
                     
                     # Mettre à jour le transaction_id si nécessaire
                     if payment.transaction_id != request.payment_hash:
-                        query = text("""
-                            UPDATE payments 
-                            SET transaction_id = :tx_id 
-                            WHERE id = :payment_id
-                        """)
-                        db.execute(query, {
-                            "tx_id": request.payment_hash,
-                            "payment_id": str(payment.id)
-                        })
+                        payment.transaction_id = request.payment_hash
                         db.commit()
                 
                 reservation.payment_status = ReservationPaymentStatus.COMPLETED
