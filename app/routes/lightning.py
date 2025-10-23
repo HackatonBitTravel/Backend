@@ -26,8 +26,8 @@ def set_payment_status_raw(db: Session, payment_id: UUID, status: str):
     try:
         # Mapping : notre code Python -> valeur PostgreSQL
         status_mapping = {
-            "SUCCESS": "completed",  # On mappe SUCCESS vers completed
-            "COMPLETED": "completed",
+            "SUCCESS": "success",    
+            "COMPLETED": "success",
             "PENDING": "pending",
             "FAILED": "failed",
             "CANCELLED": "cancelled"
