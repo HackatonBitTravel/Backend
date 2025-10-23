@@ -17,104 +17,39 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/payments/lightning", tags=["Lightning Payments"])
 
-# SOLUTION : Fonction de mapping pour contourner le problème d'enum
-def convert_to_payment_status(status: str) -> str:
-    """
-    Convertit n'importe quel statut de paiement vers les valeurs de l'enum PaymentStatus
-    """
-    status = status.upper()
-    
-    # Mapping complet
-    conversion_map = {
-        # PaymentStatus values
-        "SUCCESS": "success",
-        "PENDING": "pending", 
-        "FAILED": "failed",
-        "CANCELLED": "cancelled",
-        
-        # Reservation.PaymentStatus values
-        "COMPLETED": "success",
-        
-        # Autres variations possibles
-        "PAID": "success",
-        "CONFIRMED": "success",
-        "APPROVED": "success",
-        "REJECTED": "failed",
-        "EXPIRED": "failed"
-    }
-    
-    return conversion_map.get(status, "pending")  # Par défaut "pending"
+#  : Fonction de mapping pour contourner le problème d'enum
 def set_payment_status_raw(db: Session, payment_id: UUID, status: str):
+    """
+    Met à jour le statut d'un paiement en utilisant du SQL brut
+    pour contourner les contraintes d'enum de SQLAlchemy
+    """
     try:
-        db_status = convert_to_payment_status(status)
+        # Mapping : notre code Python -> valeur PostgreSQL
+        status_mapping = {
+            "SUCCESS": "completed",  # On mappe SUCCESS vers completed
+            "COMPLETED": "completed",
+            "PENDING": "pending",
+            "FAILED": "failed",
+            "CANCELLED": "cancelled"
+        }
         
-        logger.info(f"=== DEBUG MISE À JOUR STATUT ===")
-        logger.info(f"Payment ID: {payment_id}")
-        logger.info(f"Status input: {status}")
-        logger.info(f"Status converti: {db_status}")
-        logger.info(f"Type payment_id: {type(payment_id)}")
+        db_status = status_mapping.get(status.upper(), status.lower())
         
-        # Vérifier que le statut est valide pour l'enum
-        valid_statuses = ["pending", "success", "failed", "cancelled"]
-        if db_status not in valid_statuses:
-            logger.error(f"STATUT INVALIDE: {db_status}. Valides: {valid_statuses}")
-            return False
+        query = text("""
+            UPDATE payments 
+            SET status = :status, updated_at = NOW() 
+            WHERE id = :payment_id
+        """)
         
-        # Essayer différentes méthodes
-        methods = [
-            lambda: method_orm(db, payment_id, db_status),
-            lambda: method_sql_raw(db, payment_id, db_status),
-            lambda: method_sql_direct(db, payment_id, db_status)
-        ]
+        db.execute(query, {"status": db_status, "payment_id": str(payment_id)})
+        db.commit()
         
-        for i, method in enumerate(methods):
-            try:
-                logger.info(f"Tentative méthode {i+1}")
-                if method():
-                    logger.info(f"Succès avec méthode {i+1}")
-                    return True
-            except Exception as method_error:
-                logger.warning(f"Échec méthode {i+1}: {method_error}")
-                db.rollback()
-                continue
-                
-        logger.error("Toutes les méthodes ont échoué")
-        return False
-        
+        logger.info(f"Statut du paiement {payment_id} mis à jour vers '{db_status}'")
+        return True
     except Exception as e:
-        logger.error(f"Erreur globale: {str(e)}")
+        logger.error(f"Erreur lors de la mise à jour du statut: {str(e)}")
         db.rollback()
         return False
-
-def method_orm(db, payment_id, db_status):
-    """Méthode ORM standard"""
-    payment = db.query(Payment).filter(Payment.id == payment_id).first()
-    if payment:
-        from app.models.payment import PaymentStatus
-        status_map = {
-            "pending": PaymentStatus.PENDING,
-            "success": PaymentStatus.SUCCESS,
-            "failed": PaymentStatus.FAILED, 
-            "cancelled": PaymentStatus.CANCELLED
-        }
-        payment.status = status_map[db_status]
-        db.commit()
-        return True
-    return False
-
-def method_sql_raw(db, payment_id, db_status):
-    """Méthode SQL brut avec paramètres nommés"""
-    query = text("UPDATE payments SET status = :s, updated_at = NOW() WHERE id = :pid")
-    db.execute(query, {"s": db_status, "pid": str(payment_id)})
-    db.commit()
-    return True
-
-def method_sql_direct(db, payment_id, db_status):
-    """Méthode SQL directe avec interpolation (moins sécurisée)"""
-    query = text(f"UPDATE payments SET status = '{db_status}', updated_at = NOW() WHERE id = '{payment_id}'")
-    db.execute(query)
-    db.commit()
-    return True
 
 class LightningInvoiceRequest(BaseModel):
     reservation_id: UUID
@@ -212,7 +147,7 @@ async def lightning_webhook(request: Request, db: Session = Depends(get_db)):
         
         # Traitement selon le statut
         if status == "paid":
-            # Utiliser la fonction de mapping pour mettre à jour le statut
+            #  Utiliser la fonction de mapping pour mettre à jour le statut
             success = set_payment_status_raw(db, payment.id, "SUCCESS")
             
             if not success:
