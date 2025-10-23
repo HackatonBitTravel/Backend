@@ -48,22 +48,35 @@ def set_payment_status_raw(db: Session, payment_id: UUID, status: str):
     try:
         db_status = convert_to_payment_status(status)
         
-        query = text("""
-            UPDATE payments 
-            SET status = :status, updated_at = NOW() 
-            WHERE id = :payment_id
-        """)
+        # APPROCHE SIMPLE : Utiliser l'ORM SQLAlchemy normalement
+        payment = db.query(Payment).filter(Payment.id == payment_id).first()
+        if not payment:
+            logger.error(f"Paiement {payment_id} non trouvé")
+            return False
         
-        db.execute(query, {"status": db_status, "payment_id": str(payment_id)})
-        db.commit()
+        # Conversion manuelle vers l'enum PaymentStatus
+        from app.models.payment import PaymentStatus
         
-        logger.info(f"Statut du paiement {payment_id} mis à jour vers '{db_status}'")
-        return True
+        status_map = {
+            "pending": PaymentStatus.PENDING,
+            "success": PaymentStatus.SUCCESS, 
+            "failed": PaymentStatus.FAILED,
+            "cancelled": PaymentStatus.CANCELLED
+        }
+        
+        if db_status in status_map:
+            payment.status = status_map[db_status]
+            db.commit()
+            logger.info(f"Statut mis à jour vers {db_status} pour {payment_id}")
+            return True
+        else:
+            logger.error(f"Statut non valide: {db_status}")
+            return False
+            
     except Exception as e:
-        logger.error(f"Erreur lors de la mise à jour du statut: {str(e)}")
+        logger.error(f"Erreur ORM: {str(e)}")
         db.rollback()
         return False
-    
 class LightningInvoiceRequest(BaseModel):
     reservation_id: UUID
 
