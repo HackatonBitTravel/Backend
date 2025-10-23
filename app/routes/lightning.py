@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/payments/lightning", tags=["Lightning Payments"])
 
-#  : Fonction de mapping pour contourner le problème d'enum
+# ✅ SOLUTION : Fonction de mapping pour contourner le problème d'enum
 def set_payment_status_raw(db: Session, payment_id: UUID, status: str):
     """
     Met à jour le statut d'un paiement en utilisant du SQL brut
@@ -147,7 +147,8 @@ async def lightning_webhook(request: Request, db: Session = Depends(get_db)):
         
         # Traitement selon le statut
         if status == "paid":
-            #  Utiliser la fonction de mapping pour mettre à jour le statut
+            logger.info(f"DEBUG: Appel set_payment_status_raw avec status='SUCCESS'")
+            # Utiliser la fonction de mapping pour mettre à jour le statut
             success = set_payment_status_raw(db, payment.id, "SUCCESS")
             
             if not success:
