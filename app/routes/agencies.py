@@ -3,10 +3,15 @@
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy import func, Numeric
 from typing import List
+from datetime import datetime, timedelta
 from app.core.database import get_db
 from app.core.agency_dependencies import get_current_active_agency
 from app.models.agency import Agency, AgencyStatus
+from app.models.route import Route
+from app.models.schedule import Schedule
+from app.models.reservation import Reservation, PaymentStatus
 from app.schemas.agency import AgencyRegister, AgencyLogin, AgencyResponse, AgencyToken
 from app.services.auth import AuthService
 
@@ -25,7 +30,6 @@ def register_agency(agency_data: AgencyRegister, db: Session = Depends(get_db)):
     
     db_agency = Agency(
         name=agency_data.name,
-        # contact=agency_data.contact,
         email=agency_data.email,
         phone=agency_data.phone,
         password_hash=hashed_password
@@ -37,8 +41,6 @@ def register_agency(agency_data: AgencyRegister, db: Session = Depends(get_db)):
     return db_agency
 
 
-# router = APIRouter()
-
 @router.post("/login", response_model=AgencyToken)
 def login_agency(login_data: AgencyLogin, db: Session = Depends(get_db)):
     agency = db.query(Agency).filter(Agency.email == login_data.email).first()
@@ -48,24 +50,81 @@ def login_agency(login_data: AgencyLogin, db: Session = Depends(get_db)):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Email ou mot de passe incorrect"
         )
-    # Mettre à jour le statut à ACTIVE si ce n'est pas déjà le cas
+    
     if agency.status != AgencyStatus.ACTIVE:
         agency.status = AgencyStatus.ACTIVE
         db.commit()
         db.refresh(agency)  
     
-    # Création du token
     access_token = AuthService.create_access_token(data={"sub": agency.email})
     return {"access_token": access_token, "token_type": "bearer"}
+
+
+@router.post("/logout")
+def logout_agency(current_agency: Agency = Depends(get_current_active_agency), db: Session = Depends(get_db)):
+    return {
+        "success": True,
+        "message": "Déconnexion réussie",
+        "agency_id": str(current_agency.id)
+    }
+
 
 @router.get("/me", response_model=AgencyResponse)
 def get_agency_profile(current_agency: Agency = Depends(get_current_active_agency)):
     return current_agency
 
+
+@router.get("/stats")
+def get_agency_statistics(
+    current_agency: Agency = Depends(get_current_active_agency),
+    db: Session = Depends(get_db)
+):
+    active_trips = db.query(Schedule).join(Route).filter(
+        Route.agency_id == current_agency.id,
+        Schedule.departure_time > datetime.utcnow()
+    ).count()
+    
+    total_passengers = db.query(Reservation).join(Schedule).join(Route).filter(
+        Route.agency_id == current_agency.id,
+        Reservation.payment_status == PaymentStatus.COMPLETED
+    ).count()
+    
+    first_day_of_month = datetime.utcnow().replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    next_month = first_day_of_month + timedelta(days=32)
+    first_day_of_next_month = next_month.replace(day=1)
+    
+    monthly_revenue = db.query(
+        func.sum(func.cast(Reservation.total_amount, Numeric))
+    ).join(Schedule).join(Route).filter(
+        Route.agency_id == current_agency.id,
+        Reservation.payment_status == PaymentStatus.COMPLETED,
+        Reservation.created_at >= first_day_of_month,
+        Reservation.created_at < first_day_of_next_month
+    ).scalar()
+    
+    monthly_revenue = float(monthly_revenue) if monthly_revenue else 0.0
+    
+    tickets_sold = db.query(Reservation).join(Schedule).join(Route).filter(
+        Route.agency_id == current_agency.id,
+        Reservation.payment_status == PaymentStatus.COMPLETED
+    ).count()
+    
+    return {
+        "agency_id": str(current_agency.id),
+        "agency_name": current_agency.name,
+        "active_trips": active_trips,
+        "total_passengers": total_passengers,
+        "monthly_revenue": round(monthly_revenue, 2),
+        "tickets_sold": tickets_sold,
+        "period": f"{first_day_of_month.strftime('%B %Y')}"
+    }
+
+
 @router.get("/", response_model=List[AgencyResponse])
 def list_agencies(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
     agencies = db.query(Agency).offset(skip).limit(limit).all()
     return agencies
+
 
 @router.get("/{agency_id}", response_model=AgencyResponse)
 def get_agency(agency_id: str, db: Session = Depends(get_db)):
