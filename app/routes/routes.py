@@ -30,10 +30,20 @@ def create_route(
     return db_route
 
 @router.get("/", response_model=List[RouteResponse])
-def list_routes(skip: int = 0, limit: int = 20, db: Session = Depends(get_db)):
-    routes = db.query(Route).offset(skip).limit(limit).all()
+def list_routes(
+    skip: int = 0,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    current_agency: Agency = Depends(get_current_active_agency)  # On récupère l'agence connectée
+):
+    routes = (
+        db.query(Route)
+        .filter(Route.agency_id == current_agency.id)  # Filtrage par l'agence connectée
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
     return routes
-
 @router.get("/popular")
 def get_popular_routes(limit: int = 5, db: Session = Depends(get_db)):
     routes = db.query(
