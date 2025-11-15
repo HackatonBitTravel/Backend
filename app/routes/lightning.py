@@ -201,7 +201,7 @@ def verify_lightning_payment(request: LightningVerifyRequest, db: Session = Depe
                         payment.transaction_id = request.payment_hash
                         db.commit()
                 
-                reservation.payment_status = PaymentStatus.COMPLETED  # Même valeur!
+                reservation.payment_status = PaymentStatus.COMPLETED 
                 db.commit()
                 
                 return {

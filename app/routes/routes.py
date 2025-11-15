@@ -30,7 +30,7 @@ def create_route(
     return db_route
 
 @router.get("/", response_model=List[RouteResponse])
-def list_routes(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
+def list_routes(skip: int = 0, limit: int = 20, db: Session = Depends(get_db)):
     routes = db.query(Route).offset(skip).limit(limit).all()
     return routes
 
