@@ -4,13 +4,16 @@
 from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
 from typing import List, Optional
+from app.core.agency_dependencies import get_current_active_agency
 from app.core.database import get_db
 from app.core.dependencies import get_current_active_user
 from app.models.reservation import Reservation, PaymentStatus
 from app.models.schedule import Schedule
 from app.models.user import User
 from app.schemas.reservation import ReservationCreate, ReservationResponse
-
+from app.models.agency import Agency, AgencyStatus
+from app.models.route import Route
+from sqlalchemy import desc
 router = APIRouter(prefix="/reservations", tags=["Reservations"])
 
 @router.post("/", response_model=ReservationResponse, status_code=201)
@@ -79,3 +82,46 @@ def get_reservation(reservation_id: str, db: Session = Depends(get_db)):
     if not reservation:
         raise HTTPException(status_code=404, detail="Réservation non trouvée")
     return reservation
+
+@router.get("/agency/recent", response_model=List[dict])
+def get_agency_reservations(
+    limit: int = 10,
+    db: Session = Depends(get_db),
+    current_agency: Agency = Depends(get_current_active_agency)
+):
+    """Récupère les réservations récentes d'une agence"""
+    reservations = (
+        db.query(
+            Reservation.id,
+            Reservation.passenger_name,
+            Reservation.passenger_phone,
+            Reservation.passenger_email,
+            Reservation.total_amount,
+            Reservation.payment_status,
+            Reservation.created_at,
+            Schedule.departure_time,
+            Route.origin,
+            Route.destination
+        )
+        .join(Schedule, Reservation.schedule_id == Schedule.id)
+        .join(Route, Schedule.route_id == Route.id)
+        .filter(Route.agency_id == current_agency.id)
+        .order_by(desc(Reservation.created_at))
+        .limit(limit)
+        .all()
+    )
+    
+    return [
+        {
+            "id": str(r.id),
+            "passenger": r.passenger_name,
+            "phone": r.passenger_phone,
+            "email": r.passenger_email,
+            "route": f"{r.origin} - {r.destination}",
+            "departure": r.departure_time.isoformat(),
+            "amount": float(r.total_amount),
+            "status": r.payment_status.value,
+            "booked_at": r.created_at.isoformat()
+        }
+        for r in reservations
+    ]
